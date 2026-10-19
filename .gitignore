@@ -6,3 +6,4 @@ images/
 vae/
 .env
 hf_cache/
+test_*.png

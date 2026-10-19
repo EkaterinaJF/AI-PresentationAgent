@@ -26,11 +26,14 @@ llm = ChatOllama(
 # 2. ГЕНЕРАТОР КАРТИНОК (загружается один раз)
 # ============================================================
 
+# Определяем папку, где лежит сам скрипт
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+VAE_PATH = os.path.join(BASE_DIR, "vae", "vae-ft-mse-840000-ema-pruned.safetensors")
+
 print("🎨 Загрузка VAE...")
 vae = AutoencoderKL.from_single_file(
-    "F:/workspace/AI/PresentationAgent/vae/vae-ft-mse-840000-ema-pruned.safetensors",
+    VAE_PATH,
     torch_dtype=torch.float16
-)
 
 print("🎨 Загрузка модели Realistic Vision V5.1...")
 pipe = StableDiffusionPipeline.from_pretrained(
