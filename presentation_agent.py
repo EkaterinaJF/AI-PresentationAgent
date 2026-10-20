@@ -26,24 +26,32 @@ llm = ChatOllama(
 # 2. ГЕНЕРАТОР КАРТИНОК (загружается один раз)
 # ============================================================
 
-# Определяем папку, где лежит сам скрипт
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-VAE_PATH = os.path.join(BASE_DIR, "vae", "vae-ft-mse-840000-ema-pruned.safetensors")
+from PIL import Image, ImageDraw, ImageFont
 
-print("🎨 Загрузка VAE...")
-vae = AutoencoderKL.from_single_file(
-    VAE_PATH,
-    torch_dtype=torch.float16
+# Проверяем, доступна ли CUDA (видеокарта NVIDIA)
+USE_CUDA = torch.cuda.is_available()
+pipe = None
 
-print("🎨 Загрузка модели Realistic Vision V5.1...")
-pipe = StableDiffusionPipeline.from_pretrained(
-    "SG161222/Realistic_Vision_V5.1_noVAE",
-    vae=vae,
-    torch_dtype=torch.float16,
-    safety_checker=None
-)
-pipe.enable_model_cpu_offload()
-pipe.enable_attention_slicing()
+if USE_CUDA:
+    print("🎨 CUDA доступна. Загрузка VAE и модели Stable Diffusion...")
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    VAE_PATH = os.path.join(BASE_DIR, "vae", "vae-ft-mse-840000-ema-pruned.safetensors")
+    
+    vae = AutoencoderKL.from_single_file(
+        VAE_PATH,
+        torch_dtype=torch.float16
+    )
+    
+    pipe = StableDiffusionPipeline.from_pretrained(
+        "SG161222/Realistic_Vision_V5.1_noVAE",
+        vae=vae,
+        torch_dtype=torch.float16,
+        safety_checker=None
+    )
+    pipe.enable_model_cpu_offload()
+    pipe.enable_attention_slicing()
+else:
+    print("⚠️ CUDA недоступна. Картинки будут заменены на заглушки.")
 
 NEGATIVE_PROMPT = (
     "(deformed iris, deformed pupils, semi-realistic, cgi, 3d, render, sketch, "
@@ -56,18 +64,25 @@ NEGATIVE_PROMPT = (
     "missing arms, missing legs, extra arms, extra legs, long neck"
 )
 
-def image_agent(prompt: str, filename: str, seed: int = 42) -> str:
-    """Генерирует картинку по промпту."""
-    image = pipe(
-        prompt=prompt,
-        negative_prompt=NEGATIVE_PROMPT,
-        num_inference_steps=25,
-        guidance_scale=7.0,
-        height=512,
-        width=512,
-        generator=torch.Generator(device="cuda").manual_seed(seed)
-    ).images[0]
-    image.save(filename)
+def image_agent(prompt: str, filename: str, seed: int = 42, color: str = "#1a2a6c", font_name: str = "arial.ttf") -> str:
+    """Генерирует картинку (через SD) или рисует заглушку."""
+    if USE_CUDA:
+        image = pipe(prompt=prompt, negative_prompt=NEGATIVE_PROMPT, num_inference_steps=25, guidance_scale=7.0, height=512, width=512, generator=torch.Generator(device="cuda").manual_seed(seed)).images[0]
+        image.save(filename)
+        return filename
+    width, height = 800, 600
+    img = Image.new("RGB", (width, height), color=color)
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype(font_name, 40)
+    except Exception:
+        font = ImageFont.load_default()
+    label = prompt[:30] + "..." if len(prompt) > 30 else prompt
+    bbox = draw.textbbox((0, 0), label, font=font)
+    x = (width - (bbox[2] - bbox[0])) // 2
+    y = (height - (bbox[3] - bbox[1])) // 2
+    draw.text((x, y), label, fill="white", font=font)
+    img.save(filename)
     return filename
 
 # ============================================================
@@ -178,9 +193,9 @@ def text_agent(user_request: str) -> dict:
         - Заголовок — короткий (до 60 символов).
         - Содержание — 2–4 предложения.
         - image_prompt — ВАЖНО: пиши на АНГЛИЙСКОМ, 5–10 слов, 
-          описывающих визуальную сцену для Stable Diffusion.
-          Например: "space, planets, stars, cosmic, digital art" 
-          или "nature, forest, green, sunlight, realistic".
+        описывающих визуальную сцену для Stable Diffusion.
+        Например: "space, planets, stars, cosmic, digital art" 
+        или "nature, forest, green, sunlight, realistic".
 
         ПРАВИЛО для титульного слайда:
         - В поле "title" титульного слайда ВСЕГДА пиши название презентации.
@@ -305,7 +320,7 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
         image_prompt = slide_data.get("image_prompt", "abstract background")
         img_filename = os.path.join(img_dir, f"slide_{slide_counter+1}.png")
         print(f"   🎨 Генерация картинки для слайда {slide_counter+1}: {image_prompt}")
-        image_agent(image_prompt, img_filename, seed=42 + slide_counter)
+        image_agent(image_prompt, img_filename, seed=42 + slide_counter, color=placeholder_color, font_name=font_name)
         
         if os.path.exists(img_filename):
             slide.shapes.add_picture(
@@ -369,14 +384,7 @@ def coordinator(user_request: str, filename: str = "presentation.pptx") -> str:
 
 if __name__ == "__main__":
     user_request = """
-    Сделай презентацию про космос, 5 слайдов.
-    Стиль: научно-популярный, для школьников.
-    Темы слайдов:
-    1. Титульный — "Космос: бесконечный мир"
-    2. Что такое космос
-    3. Планеты Солнечной системы
-    4. Звёзды и галактики
-    5. Заключение — почему космос важен
+    Сделай презентацию про мужчин абьюзеров. Без титульного листа. На 4 слайда
     """
     
     print("🤖 Мультиагент презентаций запущен!")
