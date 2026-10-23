@@ -125,7 +125,52 @@ def stock_agent(query: str, filename: str) -> str:
     except Exception as e:
         print(f"   ⚠️ [STOCK] Ошибка поиска: {e}")
         return None
+import matplotlib.pyplot as plt
 
+def diagram_agent(description: str, filename: str, bg_color: str = "#ffffff", text_color: str = "#000000", font_name: str = "arial.ttf") -> str:
+    """Рисует график на основе текстового описания."""
+    print(f"   📊 [DIAGRAM] Рисую график: {description[:50]}...")
+    
+    # Настройка шрифта и цветов под стиль презентации
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['text.color'] = text_color
+    plt.rcParams['axes.labelcolor'] = text_color
+    plt.rcParams['xtick.color'] = text_color
+    plt.rcParams['ytick.color'] = text_color
+    plt.rcParams['axes.edgecolor'] = text_color
+
+    # Создаём фигуру
+    fig, ax = plt.subplots(figsize=(8, 6), facecolor=bg_color)
+    ax.set_facecolor(bg_color)
+
+    # Простой парсинг: если в описании есть "bar chart" или "diameters" — рисуем столбцы
+    # В будущем здесь можно сделать более умный парсинг данных
+    if "bar" in description.lower() or "diameters" in description.lower() or "размер" in description.lower():
+        planets = ["Меркурий", "Венера", "Земля", "Марс", "Юпитер", "Сатурн", "Уран", "Нептун"]
+        # Примерные диаметры в км (для наглядности)
+        diameters = [4879, 12104, 12742, 6779, 139820, 116460, 50724, 49244]
+        
+        bars = ax.bar(planets, diameters, color="#4A90E2")
+        ax.set_title("Сравнение диаметров планет (км)", fontsize=16, color=text_color)
+        ax.set_ylabel("Диаметр (км)", fontsize=12)
+        
+        # Добавляем подписи значений над столбцами
+        for bar in bars:
+            yval = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2, yval + 1000, int(yval), ha='center', va='bottom', fontsize=10, color=text_color)
+    else:
+        # Если описание не распознано, рисуем простой график-заглушку
+        ax.text(0.5, 0.5, "График\n(нет данных)", ha='center', va='center', fontsize=20, color=text_color, transform=ax.transAxes)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    # Сохраняем картинку
+    plt.tight_layout()
+    plt.savefig(filename, dpi=100, facecolor=bg_color)
+    plt.close(fig)
+    
+    print(f"   ✅ [DIAGRAM] Сохранено: {filename}")
+    return filename
 # ============================================================
 # 3. АГЕНТ-СТИЛИСТ
 # ============================================================
@@ -230,7 +275,11 @@ def text_agent(user_request: str) -> dict:
         - "none" — картинка не нужна (только текст).
 
         ПРАВИЛА для visual_data:
-        - Для "generated" — английский промпт для Stable Diffusion (5-10 слов).
+        - Для "generated" — КОРОТКИЙ английский промпт для Stable Diffusion. 
+          СТРОГО не более 10-12 слов. Пиши только ключевые теги через запятую, 
+          без длинных описаний и предлогов. 
+          Хорошо: "vibrant nebula, planets, deep space, cosmic dust".
+          Плохо: "Epic view of the solar system from deep space, dramatic lighting, sense of awe".
         - Для "stock" — поисковый запрос на РУССКОМ (например, "схема солнечной системы", "портрет Эйнштейна").
         - Для "diagram" — описание графика на английском.
         - Для "none" — пустая строка "".
@@ -256,6 +305,36 @@ def text_agent(user_request: str) -> dict:
         data = json.loads(json_match.group())
     except json.JSONDecodeError as e:
         raise ValueError(f"Ошибка парсинга JSON текстовика: {e}. Ответ: {response}")
+    
+    return data
+
+def controller_agent(data: dict) -> dict:
+    """Контроллер: проверяет данные от текстовика и исправляет ошибки."""
+    print("   🛡️ Контроллер проверяет данные...")
+    
+    for i, slide in enumerate(data.get("slides", [])):
+        visual_type = slide.get("visual_type")
+        visual_data = slide.get("visual_data", "")
+        
+        # Проверяем только промпты для Stable Diffusion
+        if visual_type == "generated":
+            words = visual_data.split()
+            if len(words) > 15:
+                print(f"   ⚠️ Контроллер: Слайд {i+1}. Промпт слишком длинный ({len(words)} слов). Прошу текстовика исправить...")
+                
+                # Формируем промпт для исправления
+                fix_prompt = f"""Твой предыдущий промпт для Stable Diffusion был слишком длинным: "{visual_data}".
+                Модель понимает максимум 77 токенов (около 15 слов). 
+                Перепиши его КОРОЧЕ (не более 10-12 слов), оставив только ключевые теги через запятую.
+                Верни ТОЛЬКО новый промпт, без кавычек и пояснений."""
+                
+                # Отправляем запрос текстовику
+                new_prompt_response = llm.invoke(fix_prompt)
+                new_prompt = new_prompt_response.content.strip()
+                
+                # Обновляем данные
+                slide["visual_data"] = new_prompt
+                print(f"   ✅ Контроллер: Промпт исправлен -> {new_prompt}")
     
     return data
 
@@ -364,7 +443,7 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
                 
         elif visual_type == "diagram":
             print(f"   📊 [DIAGRAM] Слайд {i+1}: {visual_data}")
-            image_agent(f"chart: {visual_data}", img_filename, seed=42 + i, color=placeholder_color, font_name=font_name)
+            diagram_agent(visual_data, img_filename, bg_color=bg_color, text_color=text_color, font_name=font_name)
             image_added = True
         
         # 4. Вставляем картинку
@@ -414,18 +493,23 @@ def coordinator(user_request: str, filename: str = "presentation.pptx") -> str:
     
     print("📝 Агент-текстовик генерирует структуру...")
     data = text_agent(user_request)
+    
     # ОТЛАДКА: смотрим, что вернул текстовик
     print("\n--- ОТЛАДКА СТРУКТУРЫ СЛАЙДОВ ---")
     for idx, slide in enumerate(data.get("slides", [])):
         print(f"Слайд {idx+1}:")
         print(f"  title: {slide.get('title')}")
-        print(f"  content: {slide.get('content', '')[:50]}...")  # первые 50 символов
+        print(f"  content: {slide.get('content', '')[:50]}...")
         print(f"  visual_type: {slide.get('visual_type')}")
         print(f"  visual_data: {slide.get('visual_data')}")
     print("--- КОНЕЦ ОТЛАДКИ ---\n")
+    
     print(f"   ✅ title_mode: {data.get('title_mode')}")
     print(f"   ✅ first_slide_is_title: {data.get('first_slide_is_title')}")
     print(f"   ✅ Слайдов в списке: {len(data.get('slides', []))}")
+    
+    # ВЫЗОВ КОНТРОЛЛЕРА
+    data = controller_agent(data)
     
     print("📦 Агент-сборщик собирает .pptx...")
     result = builder_agent(data, style, filename)
@@ -439,12 +523,7 @@ def coordinator(user_request: str, filename: str = "presentation.pptx") -> str:
 
 if __name__ == "__main__":
     user_request = """
-    Сделай презентацию про Солнечную систему, 5 слайдов.
-    1. Титульный — "Солнечная система"
-    2. Схема Солнечной системы (с подписями планет)
-    3. Портрет Николая Коперника
-    4. Художественный вид на космос
-    5. График размеров планет
+    Сделай презентацию для взрослых по сексологии. Титульный лист не нужен. Первый слайд введение что это за область науки. Второй слайд с примером ведущего сексолога и его достижением. Третий слайд с графиком или диаграммой по росту проблем в этой сфере с годами (количество обращений от года к году). Четвертый слайд - строение женских и мужских половых органов с текстом о принципиальном отличии биологическом. Пятый слайд что-то о пользе науки и прогнозе ее развития. На всех слайдах текст ориентированный на взрослого, 6-7 предложений. Фон и цвет подобрать максимально концентрирующий внимание на презентации
     """
         
     print("🤖 Мультиагент презентаций запущен!")
