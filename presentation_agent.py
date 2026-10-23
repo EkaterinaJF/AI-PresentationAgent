@@ -87,8 +87,10 @@ def image_agent(prompt: str, filename: str, seed: int = 42, color: str = "#1a2a6
 
 from ddgs import DDGS
 import requests
+import io
+
 def stock_agent(query: str, filename: str) -> str:
-    """Ищет изображение через ddgs и скачивает его."""
+    """Ищет изображение через ddgs и скачивает его, конвертируя в PNG."""
     print(f"   🔍 [STOCK] Ищу: {query}")
     try:
         with DDGS() as ddgs:
@@ -107,11 +109,16 @@ def stock_agent(query: str, filename: str) -> str:
                     content_type = img_response.headers.get("Content-Type", "")
                     if not content_type.startswith("image/"):
                         continue
-                    with open(filename, "wb") as f:
-                        f.write(img_response.content)
-                    print(f"   ✅ [STOCK] Скачано: {url[:60]}...")
+                    
+                    # Конвертируем в PNG через Pillow
+                    img = Image.open(io.BytesIO(img_response.content))
+                    img = img.convert("RGB")
+                    img.save(filename, "PNG")
+                    
+                    print(f"   ✅ [STOCK] Скачано и конвертировано: {url[:60]}...")
                     return filename
-                except Exception:
+                except Exception as e:
+                    print(f"   ⚠️ [STOCK] Ошибка с ссылкой: {e}")
                     continue
             print(f"   ⚠️ [STOCK] Не удалось скачать картинку: {query}")
             return None
@@ -313,54 +320,54 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
     
     for i, slide_data in enumerate(slides):
         
-        # Если первый слайд из списка — титульный
+        # 1. Титульный слайд (если он первый в списке)
         if first_slide_is_title and i == 0:
             title_text = slide_data.get("title", presentation_title).strip()
-                
+            
             slide = prs.slides.add_slide(prs.slide_layouts[0])
             apply_background(slide)
             slide.shapes.title.text = title_text
             apply_text_color(slide.shapes.title)
-                
+            
             slide_counter += 1
             continue
-            
-        # Обычный тематический слайд
+        
+        # 2. Обычный тематический слайд
         slide = prs.slides.add_slide(prs.slide_layouts[5])
         apply_background(slide)
         title = slide.shapes.title
-            
+        
         if title_mode == "default" and i == 0:
             title.text = f"{presentation_title}\n{slide_data.get('title', '')}"
         else:
             title.text = slide_data.get("title", f"Слайд {i+1}")
-            
+        
         apply_text_color(title)
-            
-        # ВЫБОР ВИЗУАЛА
+        
+        # 3. Выбор визуала
         visual_type = slide_data.get("visual_type", "none")
         visual_data = slide_data.get("visual_data", "")
-        img_filename = os.path.join(img_dir, f"slide_{slide_counter+1}.png")
-            
+        img_filename = os.path.join(img_dir, f"slide_{i+1}.png") # <-- Привязка к номеру слайда в списке
+        
         image_added = False
-            
+        
         if visual_type == "generated":
-            print(f"   🎨 [SD] Слайд {slide_counter+1}: {visual_data}")
-            image_agent(visual_data, img_filename, seed=42 + slide_counter, color=placeholder_color, font_name=font_name)
+            print(f"   🎨 [SD] Слайд {i+1}: {visual_data}")
+            image_agent(visual_data, img_filename, seed=42 + i, color=placeholder_color, font_name=font_name)
             image_added = True
-                
+            
         elif visual_type == "stock":
-            print(f"   🖼️ [STOCK] Слайд {slide_counter+1}: {visual_data}")
+            print(f"   🖼️ [STOCK] Слайд {i+1}: {visual_data}")
             result = stock_agent(visual_data, img_filename)
             if result:
                 image_added = True
-                    
+                
         elif visual_type == "diagram":
-            print(f"   📊 [DIAGRAM] Слайд {slide_counter+1}: {visual_data}")
-            image_agent(f"chart: {visual_data}", img_filename, seed=42 + slide_counter, color=placeholder_color, font_name=font_name)
+            print(f"   📊 [DIAGRAM] Слайд {i+1}: {visual_data}")
+            image_agent(f"chart: {visual_data}", img_filename, seed=42 + i, color=placeholder_color, font_name=font_name)
             image_added = True
-            
-        # Вставляем картинку, если она есть
+        
+        # 4. Вставляем картинку
         if image_added and os.path.exists(img_filename):
             slide.shapes.add_picture(
                 img_filename,
@@ -369,60 +376,25 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
                 width=Inches(5)
             )
         
-    # ВСТАВКА ТЕКСТА (всегда, если есть content)
-    content = slide_data.get("content", "")
-    if content:
-        textbox = slide.shapes.add_textbox(
-            left=Inches(6),
-            top=Inches(2),
-            width=Inches(6.5),
-            height=Inches(4)
-        )
-        tf = textbox.text_frame
-        tf.word_wrap = True
-        p = tf.paragraphs[0]
-        p.text = content
-        for run in p.runs:
-            run.font.size = Pt(font_size_body)
+        # 5. Вставляем текст (всегда)
+        content = slide_data.get("content", "")
+        if content:
+            textbox = slide.shapes.add_textbox(
+                left=Inches(6),
+                top=Inches(2),
+                width=Inches(6.5),
+                height=Inches(4)
+            )
+            tf = textbox.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = content
+            for run in p.runs:
+                run.font.size = Pt(font_size_body)
             
-        apply_text_color(textbox)
+            apply_text_color(textbox)
         
-    slide_counter += 1
-        
-    # ВЫБОР ВИЗУАЛА
-    visual_type = slide_data.get("visual_type", "none")
-    visual_data = slide_data.get("visual_data", "")
-    img_filename = os.path.join(img_dir, f"slide_{slide_counter+1}.png")
-        
-    image_added = False
-        
-    if visual_type == "generated":
-        print(f"   🎨 [SD] Слайд {slide_counter+1}: {visual_data}")
-        image_agent(visual_data, img_filename, seed=42 + slide_counter, color=placeholder_color, font_name=font_name)
-        image_added = True
-            
-    elif visual_type == "stock":
-        print(f"   🖼️ [STOCK] Слайд {slide_counter+1}: {visual_data}")
-        result = stock_agent(visual_data, img_filename)
-        if result:
-            image_added = True
-        else:
-            print(f"   ⚠️ Не удалось найти картинку, пропускаю.")
-                
-    elif visual_type == "diagram":
-        print(f"   📊 [DIAGRAM] Слайд {slide_counter+1}: {visual_data}")
-        # Пока заглушка, так как диаграммер ещё не написан
-        image_agent(f"chart: {visual_data}", img_filename, seed=42 + slide_counter, color=placeholder_color, font_name=font_name)
-        image_added = True
-        
-    # Вставляем картинку, если она есть
-    if image_added and os.path.exists(img_filename):
-        slide.shapes.add_picture(
-            img_filename,
-            left=Inches(0.5),
-            top=Inches(2),
-            width=Inches(5)
-        )
+        slide_counter += 1
     
     prs.save(filename)
     return f"Презентация сохранена: {filename} ({slide_counter} слайдов, режим: {title_mode})"
