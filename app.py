@@ -1,35 +1,46 @@
 import streamlit as st
 import os
-from presentation_agent import coordinator  # Импортируем нашего координатора
+from presentation_agent import coordinator
 
-# Настройка страницы
 st.set_page_config(page_title="AI Presentation Generator", page_icon="🤖", layout="wide")
+
+# Инициализация состояния (чтобы поле очищалось)
+if "user_request" not in st.session_state:
+    st.session_state.user_request = ""
 
 st.title("🤖 AI Генератор Презентаций")
 st.markdown("Опишите, какую презентацию вы хотите, и нажмите «Сгенерировать».")
 
-# Поле для ввода промпта
+# Поле для ввода (привязано к сессии)
 user_request = st.text_area(
     "Ваш запрос:", 
+    value=st.session_state.user_request,
     height=200,
-    placeholder="Например: Сделай презентацию про космос, 5 слайдов. На титульном листе укажи автора 'Иван' и город 'Москва'. 1. Звезды. 2. Планеты..."
+    placeholder="Например: Сделай презентацию про космос, 5 слайдов..."
 )
 
-# Кнопка запуска
-if st.button("🚀 Сгенерировать презентацию", type="primary"):
+col1, col2 = st.columns([1, 4])
+with col1:
+    generate_btn = st.button("🚀 Сгенерировать", type="primary")
+with col2:
+    if st.button("Очистить"):
+        st.session_state.user_request = ""
+        st.rerun()
+
+if generate_btn:
     if not user_request.strip():
         st.warning("Пожалуйста, введите запрос.")
     else:
+        st.session_state.user_request = user_request
+        filename = "web_presentation.pptx"
+        
         with st.spinner("Агенты работают... Это может занять несколько минут (генерация картинок)."):
             try:
-                # Запускаем координатора (он вернет имя файла)
-                # Внимание: в coordinator мы передаем filename="presentation.pptx"
-                result = coordinator(user_request, filename="web_presentation.pptx")
+                result = coordinator(user_request, filename=filename)
+                st.success(f"✅ {result}")
                 
-                st.success("✅ Презентация успешно создана!")
-                
-                # Кнопка для скачивания файла
-                with open("web_presentation.pptx", "rb") as file:
+                # Показываем файл для скачивания
+                with open(filename, "rb") as file:
                     st.download_button(
                         label="📥 Скачать презентацию (.pptx)",
                         data=file,
@@ -39,4 +50,3 @@ if st.button("🚀 Сгенерировать презентацию", type="pri
                     
             except Exception as e:
                 st.error(f"❌ Произошла ошибка: {e}")
-                st.info("Проверьте логи в терминале для получения подробностей.")

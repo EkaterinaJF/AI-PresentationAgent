@@ -37,22 +37,32 @@ llm = ChatOllama(
 USE_CUDA = torch.cuda.is_available()
 pipe = None
 
-if USE_CUDA:
+USE_CUDA = torch.cuda.is_available()
+_pipe = None
+
+def get_pipe():
+    """Ленивая загрузка модели Stable Diffusion (только при первом использовании)."""
+    global _pipe
+    if _pipe is not None:
+        return _pipe
+    
+    if not USE_CUDA:
+        return None
+        
     print("🎨 CUDA доступна. Загрузка VAE и модели Stable Diffusion...")
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     VAE_PATH = os.path.join(BASE_DIR, "vae", "vae-ft-mse-840000-ema-pruned.safetensors")
     
     vae = AutoencoderKL.from_single_file(VAE_PATH, torch_dtype=torch.float16)
-    pipe = StableDiffusionPipeline.from_pretrained(
+    _pipe = StableDiffusionPipeline.from_pretrained(
         "SG161222/Realistic_Vision_V5.1_noVAE",
         vae=vae,
         torch_dtype=torch.float16,
         safety_checker=None
     )
-    pipe.enable_model_cpu_offload()
-    pipe.enable_attention_slicing()
-else:
-    print("⚠️ CUDA недоступна. Картинки будут заменены на заглушки.")
+    _pipe.enable_model_cpu_offload()
+    _pipe.enable_attention_slicing()
+    return _pipe
 
 NEGATIVE_PROMPT = (
     "(deformed iris, deformed pupils, semi-realistic, cgi, 3d, render, sketch, "
@@ -67,7 +77,9 @@ NEGATIVE_PROMPT = (
 
 def image_agent(prompt: str, filename: str, seed: int = 42, color: str = "#1a2a6c", font_name: str = "arial.ttf") -> str:
     """Генерирует картинку через SD или рисует цветную заглушку, если GPU нет."""
-    if USE_CUDA:
+    pipe = get_pipe()
+    if pipe:
+        # генерация...
         image = pipe(
             prompt=prompt,
             negative_prompt=NEGATIVE_PROMPT,
@@ -609,15 +621,6 @@ def coordinator(user_request: str, filename: str = "presentation.pptx") -> str:
     
     print("📝 Агент-текстовик генерирует структуру...")
     data = text_agent(user_request)
-    
-    print("\n--- ОТЛАДКА СТРУКТУРЫ СЛАЙДОВ ---")
-    for idx, slide in enumerate(data.get("slides", [])):
-        print(f"Слайд {idx+1}:")
-        print(f"  title: {slide.get('title')}")
-        print(f"  content: {slide.get('content', '')[:50]}...")
-        print(f"  visual_type: {slide.get('visual_type')}")
-        print(f"  visual_data: {slide.get('visual_data')}")
-    print("--- КОНЕЦ ОТЛАДКИ ---\n")
     
     print(f"   ✅ title_mode: {data.get('title_mode')}")
     print(f"   ✅ first_slide_is_title: {data.get('first_slide_is_title')}")
