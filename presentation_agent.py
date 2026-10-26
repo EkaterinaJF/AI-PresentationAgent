@@ -3,7 +3,12 @@ os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 import json
 import re
+import io
+import requests
 import torch
+import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 from diffusers import StableDiffusionPipeline, AutoencoderKL
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
@@ -11,9 +16,12 @@ from langchain_core.output_parsers import StrOutputParser
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
+from pptx.chart.data import CategoryChartData
+from pptx.enum.chart import XL_CHART_TYPE
+from ddgs import DDGS
 
 # ============================================================
-# 1. МОДЕЛЬ (LLM)
+# 1. НАСТРОЙКА МОДЕЛИ (LLM)
 # ============================================================
 
 llm = ChatOllama(
@@ -23,12 +31,9 @@ llm = ChatOllama(
 )
 
 # ============================================================
-# 2. ГЕНЕРАТОР КАРТИНОК (загружается один раз)
+# 2. ГЕНЕРАТОР КАРТИНОК (Stable Diffusion)
 # ============================================================
 
-from PIL import Image, ImageDraw, ImageFont
-
-# Проверяем, доступна ли CUDA (видеокарта NVIDIA)
 USE_CUDA = torch.cuda.is_available()
 pipe = None
 
@@ -37,11 +42,7 @@ if USE_CUDA:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     VAE_PATH = os.path.join(BASE_DIR, "vae", "vae-ft-mse-840000-ema-pruned.safetensors")
     
-    vae = AutoencoderKL.from_single_file(
-        VAE_PATH,
-        torch_dtype=torch.float16
-    )
-    
+    vae = AutoencoderKL.from_single_file(VAE_PATH, torch_dtype=torch.float16)
     pipe = StableDiffusionPipeline.from_pretrained(
         "SG161222/Realistic_Vision_V5.1_noVAE",
         vae=vae,
@@ -65,11 +66,21 @@ NEGATIVE_PROMPT = (
 )
 
 def image_agent(prompt: str, filename: str, seed: int = 42, color: str = "#1a2a6c", font_name: str = "arial.ttf") -> str:
-    """Генерирует картинку (через SD) или рисует заглушку."""
+    """Генерирует картинку через SD или рисует цветную заглушку, если GPU нет."""
     if USE_CUDA:
-        image = pipe(prompt=prompt, negative_prompt=NEGATIVE_PROMPT, num_inference_steps=25, guidance_scale=7.0, height=512, width=512, generator=torch.Generator(device="cuda").manual_seed(seed)).images[0]
+        image = pipe(
+            prompt=prompt,
+            negative_prompt=NEGATIVE_PROMPT,
+            num_inference_steps=25,
+            guidance_scale=7.0,
+            height=512,
+            width=512,
+            generator=torch.Generator(device="cuda").manual_seed(seed)
+        ).images[0]
         image.save(filename)
         return filename
+    
+    # Fallback: заглушка
     width, height = 800, 600
     img = Image.new("RGB", (width, height), color=color)
     draw = ImageDraw.Draw(img)
@@ -85,9 +96,9 @@ def image_agent(prompt: str, filename: str, seed: int = 42, color: str = "#1a2a6
     img.save(filename)
     return filename
 
-from ddgs import DDGS
-import requests
-import io
+# ============================================================
+# 3. ПОИСК КАРТИНОК (Stock)
+# ============================================================
 
 def stock_agent(query: str, filename: str) -> str:
     """Ищет изображение через ddgs и скачивает его, конвертируя в PNG."""
@@ -110,12 +121,11 @@ def stock_agent(query: str, filename: str) -> str:
                     if not content_type.startswith("image/"):
                         continue
                     
-                    # Конвертируем в PNG через Pillow
                     img = Image.open(io.BytesIO(img_response.content))
                     img = img.convert("RGB")
                     img.save(filename, "PNG")
                     
-                    print(f"   ✅ [STOCK] Скачано и конвертировано: {url[:60]}...")
+                    print(f"   ✅ [STOCK] Скачано: {url[:60]}...")
                     return filename
                 except Exception as e:
                     print(f"   ⚠️ [STOCK] Ошибка с ссылкой: {e}")
@@ -125,13 +135,36 @@ def stock_agent(query: str, filename: str) -> str:
     except Exception as e:
         print(f"   ⚠️ [STOCK] Ошибка поиска: {e}")
         return None
-import matplotlib.pyplot as plt
 
-def diagram_agent(description: str, filename: str, bg_color: str = "#ffffff", text_color: str = "#000000", font_name: str = "arial.ttf") -> str:
-    """Рисует график на основе текстового описания."""
-    print(f"   📊 [DIAGRAM] Рисую график: {description[:50]}...")
+# ============================================================
+# 4. ПОСТРОЕНИЕ ГРАФИКОВ (Diagram)
+# ============================================================
+
+def _clean_numeric_data(data_list: list) -> list:
+    """Вспомогательная функция: очищает данные от процентов и строк."""
+    clean_list = []
+    for val in data_list:
+        if isinstance(val, str):
+            val = val.replace("%", "").replace(" ", "").strip()
+            try:
+                val = float(val)
+            except ValueError:
+                val = 0
+        clean_list.append(val)
+    return clean_list
+
+def diagram_agent(data: dict, filename: str, bg_color: str = "#ffffff", text_color: str = "#000000", font_name: str = "arial.ttf"):
+    """Рисует график. Для line/bar возвращает PNG, для pie — возвращает данные для pptx."""
     
-    # Настройка шрифта и цветов под стиль презентации
+    chart_type = data.get("chart_type", "bar")
+    title = data.get("title", "График")
+    print(f"   📊 [DIAGRAM] Обработка графика: {title} ({chart_type})")
+
+    # Если это круговая диаграмма, отдаем данные для нативного pptx
+    if chart_type == "pie":
+        return data
+
+    # Для line и bar рисуем через matplotlib
     plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['text.color'] = text_color
     plt.rcParams['axes.labelcolor'] = text_color
@@ -139,45 +172,62 @@ def diagram_agent(description: str, filename: str, bg_color: str = "#ffffff", te
     plt.rcParams['ytick.color'] = text_color
     plt.rcParams['axes.edgecolor'] = text_color
 
-    # Создаём фигуру
     fig, ax = plt.subplots(figsize=(8, 6), facecolor=bg_color)
     ax.set_facecolor(bg_color)
 
-    # Простой парсинг: если в описании есть "bar chart" или "diameters" — рисуем столбцы
-    # В будущем здесь можно сделать более умный парсинг данных
-    if "bar" in description.lower() or "diameters" in description.lower() or "размер" in description.lower():
-        planets = ["Меркурий", "Венера", "Земля", "Марс", "Юпитер", "Сатурн", "Уран", "Нептун"]
-        # Примерные диаметры в км (для наглядности)
-        diameters = [4879, 12104, 12742, 6779, 139820, 116460, 50724, 49244]
-        
-        bars = ax.bar(planets, diameters, color="#4A90E2")
-        ax.set_title("Сравнение диаметров планет (км)", fontsize=16, color=text_color)
-        ax.set_ylabel("Диаметр (км)", fontsize=12)
-        
-        # Добавляем подписи значений над столбцами
-        for bar in bars:
-            yval = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2, yval + 1000, int(yval), ha='center', va='bottom', fontsize=10, color=text_color)
-    else:
-        # Если описание не распознано, рисуем простой график-заглушку
-        ax.text(0.5, 0.5, "График\n(нет данных)", ha='center', va='center', fontsize=20, color=text_color, transform=ax.transAxes)
-        ax.set_xticks([])
-        ax.set_yticks([])
+    x_label = data.get("x_label", "")
+    y_label = data.get("y_label", "")
+    categories = data.get("categories", [])
+    series = data.get("series", [])
+    
+    # Обратная совместимость
+    if not series and "x_data" in data and "y_data" in data:
+        categories = data["x_data"]
+        series = [{"name": "Данные", "data": data["y_data"]}]
 
-    # Сохраняем картинку
+    if not categories or not series:
+        ax.text(0.5, 0.5, "Нет данных для графика", ha='center', va='center', fontsize=20, color=text_color, transform=ax.transAxes)
+    else:
+        clean_series = []
+        for s in series:
+            clean_series.append({
+                "name": s.get("name", "Серия"), 
+                "data": _clean_numeric_data(s.get("data", []))
+            })
+
+        if chart_type == "line":
+            for s in clean_series:
+                ax.plot(categories, s["data"], marker='o', label=s["name"], linewidth=2)
+            ax.legend(facecolor=bg_color, edgecolor=text_color, labelcolor=text_color)
+        else: # bar
+            x = np.arange(len(categories))
+            width = 0.8 / len(clean_series)
+            for i, s in enumerate(clean_series):
+                offset = (i - len(clean_series)/2 + 0.5) * width
+                bars = ax.bar(x + offset, s["data"], width, label=s["name"])
+                for bar in bars:
+                    yval = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2, yval, str(int(yval)) if yval.is_integer() else str(yval), ha='center', va='bottom', fontsize=9, color=text_color)
+            ax.set_xticks(x)
+            ax.set_xticklabels(categories)
+            ax.legend(facecolor=bg_color, edgecolor=text_color, labelcolor=text_color)
+
+        ax.set_title(title, fontsize=14, color=text_color)
+        ax.set_xlabel(x_label, fontsize=10)
+        ax.set_ylabel(y_label, fontsize=10)
+
     plt.tight_layout()
     plt.savefig(filename, dpi=100, facecolor=bg_color)
     plt.close(fig)
-    
-    print(f"   ✅ [DIAGRAM] Сохранено: {filename}")
+    print(f"   ✅ [DIAGRAM] Сохранено как картинка: {filename}")
     return filename
+
 # ============================================================
-# 3. АГЕНТ-СТИЛИСТ
+# 5. АГЕНТ-СТИЛИСТ
 # ============================================================
 
 def stylist_agent(user_request: str) -> dict:
     """Анализирует промпт и подбирает оформление презентации."""
-    
     prompt = ChatPromptTemplate.from_messages([
         ("system", """Ты — креативный дизайнер презентаций. Пользователь опишет, 
         какую презентацию он хочет. Ты должен подобрать оформление и вернуть JSON.
@@ -217,7 +267,6 @@ def stylist_agent(user_request: str) -> dict:
     
     chain = prompt | llm | StrOutputParser()
     response = chain.invoke({"input": user_request})
-    
     json_match = re.search(r'\{.*\}', response, re.DOTALL)
     if not json_match:
         raise ValueError(f"Стилист не вернул JSON. Ответ: {response}")
@@ -230,67 +279,52 @@ def stylist_agent(user_request: str) -> dict:
     return data
 
 # ============================================================
-# 4. АГЕНТ-ТЕКСТОВИК
+# 6. АГЕНТ-ТЕКСТОВИК
 # ============================================================
 
 def text_agent(user_request: str) -> dict:
     """Генерирует структуру презентации с английскими промптами для картинок."""
-    
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """Ты — генератор презентаций. Пользователь опишет, 
-        какую презентацию он хочет. Ты должен вернуть JSON.
+        ("system", """Ты — генератор презентаций. Твоя задача — вернуть JSON.
 
-        Формат ответа (строго JSON, без пояснений):
+        Формат ответа:
         {{
             "title_mode": "default" | "none" | "standard",
             "first_slide_is_title": true | false,
             "presentation_title": "Название презентации",
+            "title_slide_content": "Автор, город, дата (если указаны)",
             "slides": [
-                {{
-                    "title": "Заголовок", 
-                    "content": "Содержание", 
-                    "visual_type": "generated" | "stock" | "diagram" | "none",
-                    "visual_data": "данные для выбранного типа"
-                }},
-                ...
+                {{"title": "Заголовок", "content": "Текст", "visual_type": "generated|stock|diagram|none", "visual_data": "данные"}}
             ]
         }}
 
-        ЛОГИКА title_mode и first_slide_is_title:
-        Случай 1: Первая тема в списке — «титульный».
-        → title_mode: "none", first_slide_is_title: true
-        Случай 2: Темы + ОТДЕЛЬНО просят титульный.
-        → title_mode: "standard", first_slide_is_title: false
-        Случай 3: Про титульный ничего не сказано.
-        → title_mode: "default", first_slide_is_title: false
-        Случай 4: Сказано «без титульного».
-        → title_mode: "none", first_slide_is_title: false
-        КРИТИЧЕСКОЕ ПРАВИЛО:
-        - first_slide_is_title=true и title_mode="standard" НЕ МОГУТ быть одновременно.
+        ПРАВИЛА ДЛЯ ТИТУЛЬНОГО ЛИСТА:
+        1. Если пользователь НЕ говорил про титульный лист:
+           → title_mode: "default", first_slide_is_title: false
+           (Если указан автор/город, запиши их в title_slide_content).
 
-        ЛОГИКА visual_type:
-        - "generated" — ХУДОЖЕСТВЕННАЯ картинка (космос, природа, абстракция, фантазия, настроение). 
-        - "stock" — ТОЧНАЯ схема или изображение (анатомия, устройство механизмов, портреты реальных людей, карты, исторические фото, схемы с подписями).
-        - "diagram" — график, таблица, диаграмма данных.
-        - "none" — картинка не нужна (только текст).
+        2. Если пользователь перечислил слайды и ПЕРВЫЙ из них — «титульный»:
+           → title_mode: "none", first_slide_is_title: true
+           (Если указан автор/город, запиши их в title_slide_content).
 
-        ПРАВИЛА для visual_data:
-        - Для "generated" — КОРОТКИЙ английский промпт для Stable Diffusion. 
-          СТРОГО не более 10-12 слов. Пиши только ключевые теги через запятую, 
-          без длинных описаний и предлогов. 
-          Хорошо: "vibrant nebula, planets, deep space, cosmic dust".
-          Плохо: "Epic view of the solar system from deep space, dramatic lighting, sense of awe".
-        - Для "stock" — поисковый запрос на РУССКОМ (например, "схема солнечной системы", "портрет Эйнштейна").
-        - Для "diagram" — описание графика на английском.
-        - Для "none" — пустая строка "".
+        3. Если пользователь ОТДЕЛЬНО просит титульный, а темы идут с 1-го:
+           → title_mode: "standard", first_slide_is_title: false
+           (Если указан автор/город, запиши их в title_slide_content).
 
-        ПРАВИЛА для slides:
-        - Ровно столько слайдов, сколько просит пользователь.
-        - Заголовок — короткий (до 60 символов).
-        - Содержание — 2–4 предложения.
-        - В поле "title" титульного слайда ВСЕГДА пиши название презентации.
+        4. Если пользователь сказал «без титульного»:
+           → title_mode: "none", first_slide_is_title: false
+           (title_slide_content оставь пустым).
 
-        Никаких пояснений до или после JSON. Только валидный JSON."""),
+        ПРАВИЛА ДЛЯ СЛАЙДОВ:
+        - Заголовки: до 9 слов, без точек и двоеточий.
+        - content: 6-7 предложений для контентных слайдов.
+        - visual_type: 
+          - "generated" — художественная картинка (промпт на английском, до 10 слов).
+          - "stock" — точная схема/портрет (запрос на русском).
+          - "diagram" — график (объект с chart_type, title, categories, series).
+          - "none" — без картинки.
+
+        Верни ТОЛЬКО валидный JSON, без пояснений."""),
         ("user", "{input}")
     ])
     
@@ -308,9 +342,27 @@ def text_agent(user_request: str) -> dict:
     
     return data
 
+# ============================================================
+# 7. КОНТРОЛЛЕР (Проверка данных)
+# ============================================================
+
 def controller_agent(data: dict) -> dict:
     """Контроллер: проверяет данные от текстовика и исправляет ошибки."""
     print("   🛡️ Контроллер проверяет данные...")
+    
+    # --- ПРОВЕРКА ЛОГИЧЕСКОГО КОНФЛИКТА ТИТУЛЬНОГО ---
+    title_mode = data.get("title_mode")
+    first_slide_is_title = data.get("first_slide_is_title")
+    
+    if title_mode == "standard" and first_slide_is_title:
+        print("   ⚠️ Контроллер: Конфликт! title_mode='standard' и first_slide_is_title=True одновременно.")
+        print("   🔧 Исправляю: отключаю first_slide_is_title и удаляю дублирующий слайд.")
+        data["first_slide_is_title"] = False
+        
+        # Удаляем первый слайд из списка, так как он дублирует титульный
+        if data.get("slides"):
+            data["slides"].pop(0)
+    # ---------------------------------------------------
     
     for i, slide in enumerate(data.get("slides", [])):
         visual_type = slide.get("visual_type")
@@ -321,25 +373,19 @@ def controller_agent(data: dict) -> dict:
             words = visual_data.split()
             if len(words) > 15:
                 print(f"   ⚠️ Контроллер: Слайд {i+1}. Промпт слишком длинный ({len(words)} слов). Прошу текстовика исправить...")
-                
-                # Формируем промпт для исправления
                 fix_prompt = f"""Твой предыдущий промпт для Stable Diffusion был слишком длинным: "{visual_data}".
                 Модель понимает максимум 77 токенов (около 15 слов). 
                 Перепиши его КОРОЧЕ (не более 10-12 слов), оставив только ключевые теги через запятую.
                 Верни ТОЛЬКО новый промпт, без кавычек и пояснений."""
-                
-                # Отправляем запрос текстовику
                 new_prompt_response = llm.invoke(fix_prompt)
                 new_prompt = new_prompt_response.content.strip()
-                
-                # Обновляем данные
                 slide["visual_data"] = new_prompt
                 print(f"   ✅ Контроллер: Промпт исправлен -> {new_prompt}")
     
     return data
 
 # ============================================================
-# 5. АГЕНТ-СБОРЩИК
+# 8. АГЕНТ-СБОРЩИК
 # ============================================================
 
 def hex_to_rgb(hex_color: str) -> tuple:
@@ -355,16 +401,10 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
     presentation_title = data.get("presentation_title", "Презентация")
     slides = data.get("slides", [])
     
-    # Защита от двойного титульного
-    if first_slide_is_title and title_mode == "standard":
-        print("   ⚠️ Конфликт флагов. Исправляю: title_mode='none'")
-        title_mode = "none"
-    
     bg_color = style.get("background_color", "#ffffff")
     text_color = style.get("text_color", "#000000")
     placeholder_color = style.get("placeholder_color", "#cccccc")
     font_name = style.get("font_name", "arial.ttf")
-    font_size_body = style.get("font_size_body", 18)
     
     img_dir = "images"
     os.makedirs(img_dir, exist_ok=True)
@@ -388,46 +428,76 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
     
     slide_counter = 0
     
-    if title_mode == "standard":
+    # ========================================================
+    # 1. ПРОВЕРКА НАЛИЧИЯ ТИТУЛЬНОГО ЛИСТА
+    # ========================================================
+    
+    title_slide_content = data.get("title_slide_content", "")
+    
+    # 1.1. Титульный лист по умолчанию (default) или отдельный (standard)
+    if title_mode in ["default", "standard"]:
         slide = prs.slides.add_slide(prs.slide_layouts[0])
         apply_background(slide)
         slide.shapes.title.text = presentation_title
         apply_text_color(slide.shapes.title)
+        
         if len(slide.placeholders) > 1:
-            slide.placeholders[1].text = ""
+            slide.placeholders[1].text = title_slide_content
+            apply_text_color(slide.placeholders[1])
+                
         slide_counter += 1
+
+    # 1.2. Титульный лист уже включен в список слайдов пользователем (first_slide_is_title)
+    elif first_slide_is_title and slides:
+        slide_data = slides.pop(0)
+        title_text = slide_data.get("title", presentation_title).strip()
+        
+        slide = prs.slides.add_slide(prs.slide_layouts[0])
+        apply_background(slide)
+        slide.shapes.title.text = title_text
+        apply_text_color(slide.shapes.title)
+        
+        if len(slide.placeholders) > 1:
+            slide.placeholders[1].text = title_slide_content
+            apply_text_color(slide.placeholders[1])
+            
+        slide_counter += 1
+    
+    # ========================================================
+    # 2. ОСНОВНОЙ ЦИКЛ ПО СЛАЙДАМ (только контент)
+    # ========================================================
     
     for i, slide_data in enumerate(slides):
         
-        # 1. Титульный слайд (если он первый в списке)
-        if first_slide_is_title and i == 0:
-            title_text = slide_data.get("title", presentation_title).strip()
-            
-            slide = prs.slides.add_slide(prs.slide_layouts[0])
-            apply_background(slide)
-            slide.shapes.title.text = title_text
-            apply_text_color(slide.shapes.title)
-            
-            slide_counter += 1
-            continue
-        
-        # 2. Обычный тематический слайд
+        # 2.1. Создание обычного тематического слайда
         slide = prs.slides.add_slide(prs.slide_layouts[5])
         apply_background(slide)
         title = slide.shapes.title
         
-        if title_mode == "default" and i == 0:
-            title.text = f"{presentation_title}\n{slide_data.get('title', '')}"
-        else:
-            title.text = slide_data.get("title", f"Слайд {i+1}")
+        title.left = Inches(0.5)
+        title.top = Inches(0.2)
+        title.width = Inches(12.33)
+        title.height = Inches(1.2)
         
+        title.text = slide_data.get("title", f"Слайд {i+1}")
         apply_text_color(title)
         
-        # 3. Выбор визуала
+        # 2.1.1. Динамический шрифт заголовка
+        title_text_len = len(slide_data.get("title", ""))
+        title_font_size = 36
+        if title_text_len > 45:
+            title_font_size = 28
+        elif title_text_len > 35:
+            title_font_size = 32
+            
+        for paragraph in title.text_frame.paragraphs:
+            for run in paragraph.runs:
+                run.font.size = Pt(title_font_size)
+        
+        # 2.2. Выбор визуала
         visual_type = slide_data.get("visual_type", "none")
         visual_data = slide_data.get("visual_data", "")
-        img_filename = os.path.join(img_dir, f"slide_{i+1}.png") # <-- Привязка к номеру слайда в списке
-        
+        img_filename = os.path.join(img_dir, f"slide_{i+1}.png")
         image_added = False
         
         if visual_type == "generated":
@@ -442,34 +512,80 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
                 image_added = True
                 
         elif visual_type == "diagram":
-            print(f"   📊 [DIAGRAM] Слайд {i+1}: {visual_data}")
-            diagram_agent(visual_data, img_filename, bg_color=bg_color, text_color=text_color, font_name=font_name)
-            image_added = True
+            print(f"   📊 [DIAGRAM] Слайд {i+1}: {visual_data.get('title', 'График')}")
+            result = diagram_agent(visual_data, img_filename, bg_color=bg_color, text_color=text_color, font_name=font_name)
+            
+            if isinstance(result, dict): # Нативная круговая диаграмма
+                chart_data = CategoryChartData()
+                chart_data.categories = result["categories"]
+                clean_data = _clean_numeric_data(result["series"][0]["data"])
+                chart_data.add_series(result["series"][0]["name"], clean_data)
+                
+                x, y, cx, cy = Inches(0.5), Inches(1.5), Inches(5), Inches(5)
+                graphic_frame = slide.shapes.add_chart(XL_CHART_TYPE.PIE, x, y, cx, cy, chart_data)
+                chart = graphic_frame.chart
+                chart.has_title = True
+                chart.chart_title.text_frame.text = result["title"]
+                
+                plot = chart.plots[0]
+                plot.has_data_labels = True
+                data_labels = plot.data_labels
+                data_labels.show_percentage = True
+                data_labels.show_category_name = True
+                data_labels.show_value = False
+                image_added = False
+            else:
+                image_added = True
         
-        # 4. Вставляем картинку
+        # 2.3. Вставка картинки (с сохранением пропорций)
         if image_added and os.path.exists(img_filename):
-            slide.shapes.add_picture(
-                img_filename,
-                left=Inches(0.5),
-                top=Inches(2),
-                width=Inches(5)
-            )
+            try:
+                img = Image.open(img_filename)
+                img_w, img_h = img.size
+                max_size = 5.0
+                
+                if img_w > img_h:
+                    final_width = max_size
+                    final_height = max_size * (img_h / img_w)
+                else:
+                    final_height = max_size
+                    final_width = max_size * (img_w / img_h)
+                
+                slide.shapes.add_picture(
+                    img_filename,
+                    left=Inches(0.5),
+                    top=Inches(1.5),
+                    width=Inches(final_width),
+                    height=Inches(final_height)
+                )
+            except Exception as e:
+                print(f"   ⚠️ Не удалось обработать картинку: {e}")
         
-        # 5. Вставляем текст (всегда)
+        # 2.4. Вставка текста (всегда)
         content = slide_data.get("content", "")
         if content:
+            base_size = 24 
+            actual_font_size = base_size
+            
+            if len(content) > 400:
+                actual_font_size = max(18, base_size - 4)
+            elif len(content) > 250:
+                actual_font_size = max(20, base_size - 2)
+            
             textbox = slide.shapes.add_textbox(
                 left=Inches(6),
-                top=Inches(2),
+                top=Inches(1.5),
                 width=Inches(6.5),
-                height=Inches(4)
+                height=Inches(5.5)
             )
             tf = textbox.text_frame
             tf.word_wrap = True
+            tf.vertical_anchor = 3
+            
             p = tf.paragraphs[0]
             p.text = content
             for run in p.runs:
-                run.font.size = Pt(font_size_body)
+                run.font.size = Pt(actual_font_size)
             
             apply_text_color(textbox)
         
@@ -479,7 +595,7 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
     return f"Презентация сохранена: {filename} ({slide_counter} слайдов, режим: {title_mode})"
 
 # ============================================================
-# 6. КООРДИНАТОР
+# 9. КООРДИНАТОР
 # ============================================================
 
 def coordinator(user_request: str, filename: str = "presentation.pptx") -> str:
@@ -494,7 +610,6 @@ def coordinator(user_request: str, filename: str = "presentation.pptx") -> str:
     print("📝 Агент-текстовик генерирует структуру...")
     data = text_agent(user_request)
     
-    # ОТЛАДКА: смотрим, что вернул текстовик
     print("\n--- ОТЛАДКА СТРУКТУРЫ СЛАЙДОВ ---")
     for idx, slide in enumerate(data.get("slides", [])):
         print(f"Слайд {idx+1}:")
@@ -506,9 +621,9 @@ def coordinator(user_request: str, filename: str = "presentation.pptx") -> str:
     
     print(f"   ✅ title_mode: {data.get('title_mode')}")
     print(f"   ✅ first_slide_is_title: {data.get('first_slide_is_title')}")
+    print(f"   ✅ title_slide_content: {data.get('title_slide_content')}") # <-- ВОТ ЭТА СТРОКА
     print(f"   ✅ Слайдов в списке: {len(data.get('slides', []))}")
     
-    # ВЫЗОВ КОНТРОЛЛЕРА
     data = controller_agent(data)
     
     print("📦 Агент-сборщик собирает .pptx...")
@@ -518,19 +633,18 @@ def coordinator(user_request: str, filename: str = "presentation.pptx") -> str:
     return result
 
 # ============================================================
-# 7. ЗАПРОС ПОЛЬЗОВАТЕЛЯ
+# 10. ЗАПУСК
 # ============================================================
 
 if __name__ == "__main__":
     user_request = """
-    Сделай презентацию для взрослых по сексологии. Титульный лист не нужен. Первый слайд введение что это за область науки. Второй слайд с примером ведущего сексолога и его достижением. Третий слайд с графиком или диаграммой по росту проблем в этой сфере с годами (количество обращений от года к году). Четвертый слайд - строение женских и мужских половых органов с текстом о принципиальном отличии биологическом. Пятый слайд что-то о пользе науки и прогнозе ее развития. На всех слайдах текст ориентированный на взрослого, 6-7 предложений. Фон и цвет подобрать максимально концентрирующий внимание на презентации
+    Сделай презентацию о происхождении мира. На титульном листе кроме заголовка укажи автора "Гоголь-моголь" и город "Бобруйск". На втором слайде опиши многообразие религиозных версий происхождения мира и человека. На третьем раскрой теорию дарвина с популярной картинкой где человек произошел от обезьяны. На четвертом про теорию большого взрыва. На пятом теорию матрицы и найди фото или картинку популярного ученого, придерживающегося этой теории. На шестом альтернативную теорию.
     """
-        
+    
     print("🤖 Мультиагент презентаций запущен!")
     print("=" * 50)
-        
-    # Вот этой строки не хватало!
+    
     result = coordinator(user_request, filename="space_presentation.pptx")
-        
+    
     print("=" * 50)
     print(f"🎉 Готово! {result}")
