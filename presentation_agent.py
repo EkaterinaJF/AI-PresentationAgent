@@ -126,6 +126,12 @@ def stock_agent(query: str, filename: str) -> str:
                 url = r.get('image')
                 if not url:
                     continue
+				# --- ФИЛЬТР МАГАЗИНОВ ---
+                blocked_domains = ["ozon.ru", "wildberries.ru", "avito.ru", "market.yandex.ru", "aliexpress.ru"]
+                if any(domain in url for domain in blocked_domains):
+                    print(f"   ⚠️ [STOCK] Пропускаю магазин: {url[:50]}...")
+                    continue
+                # -------------------------
                 try:
                     img_response = requests.get(url, timeout=30)
                     img_response.raise_for_status()
@@ -251,8 +257,12 @@ def stylist_agent(user_request: str) -> dict:
             "placeholder_color": "#rrggbb",
             "font_name": "arial.ttf",
             "font_size_title": 32,
-            "font_size_body": 18
+            "font_size_body": 18,
+            "style_prompt": "общий стиль для картинок (на английском)"
         }}
+
+        ПРАВИЛО для style_prompt:
+        - Опиши общий визуальный стиль презентации на английском (например, "photorealistic, cinematic, dark cosmic", "flat vector, bright colors, cartoon", "minimalist, clean, corporate").
 
         ПРАВИЛА:
         1. Если пользователь указал что-то явно — учти это.
@@ -313,15 +323,15 @@ def text_agent(user_request: str) -> dict:
         ПРАВИЛА ДЛЯ ТИТУЛЬНОГО ЛИСТА:
         1. Если пользователь НЕ говорил про титульный лист:
            → title_mode: "default", first_slide_is_title: false
-           (Если указан автор/город, запиши их в title_slide_content).
+           (Если указан автор/город, запиши их в title_slide_content. Если НЕ указан — оставь пустую строку "").
 
         2. Если пользователь перечислил слайды и ПЕРВЫЙ из них — «титульный»:
            → title_mode: "none", first_slide_is_title: true
-           (Если указан автор/город, запиши их в title_slide_content).
+           (Если указан автор/город, запиши их в title_slide_content. Если НЕ указан — оставь пустую строку "").
 
         3. Если пользователь ОТДЕЛЬНО просит титульный, а темы идут с 1-го:
            → title_mode: "standard", first_slide_is_title: false
-           (Если указан автор/город, запиши их в title_slide_content).
+           (Если указан автор/город, запиши их в title_slide_content. Если НЕ указан — оставь пустую строку "").
 
         4. Если пользователь сказал «без титульного»:
            → title_mode: "none", first_slide_is_title: false
@@ -329,13 +339,17 @@ def text_agent(user_request: str) -> dict:
 
         ПРАВИЛА ДЛЯ СЛАЙДОВ:
         - Заголовки: до 9 слов, без точек и двоеточий.
-        - content: 6-7 предложений для контентных слайдов.
+        - content: Если пользователь указал количество предложений на слайд (например, "по 2-4 предложения"), СТРОГО следуй этому. Если не указал — пиши 6-7 предложений.
         - visual_type: 
           - "generated" — художественная картинка (промпт на английском, до 10 слов).
           - "stock" — точная схема/портрет (запрос на русском).
           - "diagram" — график (объект с chart_type, title, categories, series).
           - "none" — без картинки.
 
+        ВАЖНОЕ ПРАВИЛО ДЛЯ ДЕТЕЙ:
+        - Если аудитория — дети (малыши, школьники), НЕ ИСПОЛЬЗУЙ visual_type: "diagram". 
+
+          Вместо графиков используй "generated" (картинки) или "none" (только текст).
         Верни ТОЛЬКО валидный JSON, без пояснений."""),
         ("user", "{input}")
     ])
@@ -358,7 +372,7 @@ def text_agent(user_request: str) -> dict:
 # 7. КОНТРОЛЛЕР (Проверка данных)
 # ============================================================
 
-def controller_agent(data: dict) -> dict:
+def controller_agent(data: dict, user_request: str = "") -> dict:
     """Контроллер: проверяет данные от текстовика и исправляет ошибки."""
     print("   🛡️ Контроллер проверяет данные...")
     
@@ -370,18 +384,26 @@ def controller_agent(data: dict) -> dict:
         print("   ⚠️ Контроллер: Конфликт! title_mode='standard' и first_slide_is_title=True одновременно.")
         print("   🔧 Исправляю: отключаю first_slide_is_title и удаляю дублирующий слайд.")
         data["first_slide_is_title"] = False
-        
-        # Удаляем первый слайд из списка, так как он дублирует титульный
         if data.get("slides"):
             data["slides"].pop(0)
     # ---------------------------------------------------
+
+    # --- ОПРЕДЕЛЯЕМ, ДЕТСКАЯ ЛИ ЭТО ПРЕЗЕНТАЦИЯ ---
+    is_kids_presentation = any(word in user_request.lower() for word in ["малыш", "ребен", "дет", "школьник"])
     
     for i, slide in enumerate(data.get("slides", [])):
         visual_type = slide.get("visual_type")
         visual_data = slide.get("visual_data", "")
         
+        # --- ЗАПРЕТ ГРАФИКОВ ДЛЯ ДЕТЕЙ ---
+        if is_kids_presentation and visual_type == "diagram":
+            print(f"   ⚠️ Контроллер: Слайд {i+1}. Детская презентация не должна содержать графиков. Меняю на картинку.")
+            slide["visual_type"] = "generated"
+            slide["visual_data"] = "cute cartoon illustration, bright colors, for kids"
+        # ---------------------------------
+        
         # Проверяем только промпты для Stable Diffusion
-        if visual_type == "generated":
+        if slide["visual_type"] == "generated":
             words = visual_data.split()
             if len(words) > 15:
                 print(f"   ⚠️ Контроллер: Слайд {i+1}. Промпт слишком длинный ({len(words)} слов). Прошу текстовика исправить...")
@@ -513,8 +535,11 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
         image_added = False
         
         if visual_type == "generated":
-            print(f"   🎨 [SD] Слайд {i+1}: {visual_data}")
-            image_agent(visual_data, img_filename, seed=42 + i, color=placeholder_color, font_name=font_name)
+            style_prompt = style.get("style_prompt", "")
+            full_prompt = f"{visual_data}, {style_prompt}" if style_prompt else visual_data
+            
+            print(f"   🎨 [SD] Слайд {i+1}: {full_prompt[:60]}...")
+            image_agent(full_prompt, img_filename, seed=42 + i, color=placeholder_color, font_name=font_name)
             image_added = True
             
         elif visual_type == "stock":
@@ -627,12 +652,17 @@ def coordinator(user_request: str, filename: str = "presentation.pptx") -> str:
     print(f"   ✅ title_slide_content: {data.get('title_slide_content')}") # <-- ВОТ ЭТА СТРОКА
     print(f"   ✅ Слайдов в списке: {len(data.get('slides', []))}")
     
-    data = controller_agent(data)
+    data = controller_agent(data, user_request)
     
     print("📦 Агент-сборщик собирает .pptx...")
     result = builder_agent(data, style, filename)
     print(f"   ✅ {result}")
     
+	    # Сохраняем данные для превью в Streamlit
+    import json
+    with open("presentation_data.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+		
     return result
 
 
