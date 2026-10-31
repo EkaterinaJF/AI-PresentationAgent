@@ -126,7 +126,7 @@ def stock_agent(query: str, filename: str) -> str:
                 url = r.get('image')
                 if not url:
                     continue
-				# --- ФИЛЬТР МАГАЗИНОВ ---
+                # --- ФИЛЬТР МАГАЗИНОВ ---
                 blocked_domains = ["ozon.ru", "wildberries.ru", "avito.ru", "market.yandex.ru", "aliexpress.ru"]
                 if any(domain in url for domain in blocked_domains):
                     print(f"   ⚠️ [STOCK] Пропускаю магазин: {url[:50]}...")
@@ -342,7 +342,7 @@ def text_agent(user_request: str) -> dict:
         - content: Если пользователь указал количество предложений на слайд (например, "по 2-4 предложения"), СТРОГО следуй этому. Если не указал — пиши 6-7 предложений.
         - visual_type: 
           - "generated" — художественная картинка (промпт на английском, до 10 слов).
-          - "stock" — точная схема/портрет (запрос на русском).
+          - "stock" — ТОЧНАЯ схема или изображение (анатомия, устройство механизмов, портреты реальных людей, карты, исторические фото, схемы с подписями),запрос пиши на русском.
           - "diagram" — график (объект с chart_type, title, categories, series).
           - "none" — без картинки.
 
@@ -534,45 +534,56 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
         img_filename = os.path.join(img_dir, f"slide_{i+1}.png")
         image_added = False
         
-        if visual_type == "generated":
-            style_prompt = style.get("style_prompt", "")
-            full_prompt = f"{visual_data}, {style_prompt}" if style_prompt else visual_data
-            
-            print(f"   🎨 [SD] Слайд {i+1}: {full_prompt[:60]}...")
-            image_agent(full_prompt, img_filename, seed=42 + i, color=placeholder_color, font_name=font_name)
+        # --- ПРОВЕРКА КЭША ---
+        if os.path.exists(img_filename):
+            print(f"   ✅ [CACHE] Слайд {i+1}. Использую готовую картинку.")
             image_added = True
-            
-        elif visual_type == "stock":
-            print(f"   🖼️ [STOCK] Слайд {i+1}: {visual_data}")
-            result = stock_agent(visual_data, img_filename)
-            if result:
+        else:
+            if visual_type == "generated":
+                style_prompt = style.get("style_prompt", "")
+                full_prompt = f"{visual_data}, {style_prompt}" if style_prompt else visual_data
+                print(f"   🎨 [SD] Слайд {i+1}: {full_prompt[:60]}...")
+                image_agent(full_prompt, img_filename, seed=42 + i, color=placeholder_color, font_name=font_name)
                 image_added = True
                 
-        elif visual_type == "diagram":
-            print(f"   📊 [DIAGRAM] Слайд {i+1}: {visual_data.get('title', 'График')}")
-            result = diagram_agent(visual_data, img_filename, bg_color=bg_color, text_color=text_color, font_name=font_name)
-            
-            if isinstance(result, dict): # Нативная круговая диаграмма
-                chart_data = CategoryChartData()
-                chart_data.categories = result["categories"]
-                clean_data = _clean_numeric_data(result["series"][0]["data"])
-                chart_data.add_series(result["series"][0]["name"], clean_data)
-                
-                x, y, cx, cy = Inches(0.5), Inches(1.5), Inches(5), Inches(5)
-                graphic_frame = slide.shapes.add_chart(XL_CHART_TYPE.PIE, x, y, cx, cy, chart_data)
-                chart = graphic_frame.chart
-                chart.has_title = True
-                chart.chart_title.text_frame.text = result["title"]
-                
-                plot = chart.plots[0]
-                plot.has_data_labels = True
-                data_labels = plot.data_labels
-                data_labels.show_percentage = True
-                data_labels.show_category_name = True
-                data_labels.show_value = False
-                image_added = False
-            else:
-                image_added = True
+            elif visual_type == "stock":
+                print(f"   🖼️ [STOCK] Слайд {i+1}: {visual_data}")
+                result = stock_agent(visual_data, img_filename)
+                if result:
+                    image_added = True
+                    
+            elif visual_type == "diagram":
+                # Защита: если visual_data пришла строкой, а не словарем
+                if not isinstance(visual_data, dict):
+                    print(f"   ⚠️ [DIAGRAM] Слайд {i+1}. Данные не словарь. Рисую заглушку.")
+                    image_agent("График (нет данных)", img_filename, seed=42 + i, color=placeholder_color, font_name=font_name)
+                    image_added = True
+                else:
+                    print(f"   📊 [DIAGRAM] Слайд {i+1}: {visual_data.get('title', 'График')}")
+                    result = diagram_agent(visual_data, img_filename, bg_color=bg_color, text_color=text_color, font_name=font_name)
+                    
+                    if isinstance(result, dict): # Нативная круговая диаграмма
+                        chart_data = CategoryChartData()
+                        chart_data.categories = result["categories"]
+                        clean_data = _clean_numeric_data(result["series"][0]["data"])
+                        chart_data.add_series(result["series"][0]["name"], clean_data)
+                        
+                        x, y, cx, cy = Inches(0.5), Inches(1.5), Inches(5), Inches(5)
+                        graphic_frame = slide.shapes.add_chart(XL_CHART_TYPE.PIE, x, y, cx, cy, chart_data)
+                        chart = graphic_frame.chart
+                        chart.has_title = True
+                        chart.chart_title.text_frame.text = result["title"]
+                        
+                        plot = chart.plots[0]
+                        plot.has_data_labels = True
+                        data_labels = plot.data_labels
+                        data_labels.show_percentage = True
+                        data_labels.show_category_name = True
+                        data_labels.show_value = False
+                        image_added = False
+                    else:
+                        image_added = True
+        # -----------------------------------------------------------
         
         # 2.3. Вставка картинки (с сохранением пропорций)
         if image_added and os.path.exists(img_filename):
@@ -638,6 +649,13 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
 def coordinator(user_request: str, filename: str = "presentation.pptx") -> str:
     """Координирует работу всех агентов."""
     
+    # --- ОЧИСТКА СТАРЫХ КАРТИНОК ---
+    import shutil
+    if os.path.exists("images"):
+        shutil.rmtree("images")
+    os.makedirs("images", exist_ok=True)
+    # --------------------------------
+    
     print("🎨 Агент-стилист подбирает оформление...")
     style = stylist_agent(user_request)
     print(f"   ✅ Фон: {style.get('background_color')}")
@@ -658,11 +676,44 @@ def coordinator(user_request: str, filename: str = "presentation.pptx") -> str:
     result = builder_agent(data, style, filename)
     print(f"   ✅ {result}")
     
-	    # Сохраняем данные для превью в Streamlit
+        # Сохраняем данные для превью в Streamlit
     import json
+    data["style"] = style
     with open("presentation_data.json", "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-		
+        
     return result
 
+# ============================================================
+# 10. УТИЛИТЫ ДЛЯ РЕДАКТОРА (Регенерация слайдов)
+# ============================================================
 
+def regenerate_text(slide_data: dict, user_prompt: str = "") -> str:
+    """Перегенерирует текст для одного слайда."""
+    title = slide_data.get("title", "")
+    old_content = slide_data.get("content", "")
+    
+    prompt = f"""Перепиши текст для слайда "{title}". 
+    Старый текст: "{old_content}". 
+    Пожелание пользователя: {user_prompt if user_prompt else 'Сделай текст более интересным'}.
+    Верни ТОЛЬКО новый текст, без кавычек и заголовков."""
+    
+    response = llm.invoke(prompt)
+    return response.content.strip()
+
+def regenerate_image(slide_data: dict, user_prompt: str = "", filename: str = "temp_slide.png") -> str:
+    """Перегенерирует картинку для одного слайда (с учетом типа визуала)."""
+    visual_type = slide_data.get("visual_type", "generated")
+    old_prompt = slide_data.get("visual_data", "")
+    
+    # Если это сток, то просто ищем заново
+    if visual_type == "stock":
+        # Пользовательский промпт добавляем к старому запросу
+        new_query = f"{old_prompt} {user_prompt}".strip()
+        stock_agent(new_query, filename)
+    else:
+        # Для SD добавляем стиль (если он есть в данных слайда, но пока просто промпт)
+        new_prompt = f"{old_prompt}, {user_prompt}" if user_prompt else old_prompt
+        image_agent(new_prompt, filename, seed=hash(new_prompt) % 100000)
+        
+    return filename
