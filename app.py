@@ -30,7 +30,7 @@ if st.session_state.current_data is None:
             with st.spinner("Агенты работают... (генерация картинок может занять время)"):
                 try:
                     # Запускаем координатора
-                    coordinator(user_request, filename="draft_presentation.pptx")
+                    coordinator(user_request, filename="final_presentation.pptx")
                     
                     # Загружаем JSON в память
                     with open("presentation_data.json", "r", encoding="utf-8") as f:
@@ -125,32 +125,81 @@ else:
             st.info(slide.get("content", "Нет текста"))
         
         st.divider()
+
+    # --- ПЕРЕСБОРКА СТИЛЯ ---
+    st.markdown("### 🎨 Пересобрать стиль")
+    style_prompt = st.text_input("Пожелание к стилю:", placeholder="например: сделай светлее и теплее")
     
-    # --- ОБЩАЯ КНОПКА СОХРАНЕНИЯ ---
-    st.markdown("### 💾 Сохранить все изменения")
-    if st.button("Собрать и скачать .pptx", type="primary"):
-        with st.spinner("Собираю финальную презентацию..."):
+    col_style_1, col_style_2 = st.columns(2)
+    with col_style_1:
+        if st.button("Пересобрать стиль"):
+            with st.spinner("Меняю оформление..."):
+                try:
+                    # Сохраняем текущий стиль перед изменением
+                    if "previous_style" not in st.session_state:
+                        st.session_state.previous_style = data.get("style", {})
+                    
+                    from presentation_agent import restyle_presentation
+                    result = restyle_presentation(data, style_prompt, filename="restyled_presentation.pptx")
+                    st.success("Стиль обновлён! Нажмите «Принять изменения и скачать», чтобы сохранить.")
+                except Exception as e:
+                    st.error(f"Ошибка: {e}")
+    with col_style_2:
+        if st.button("Вернуть предыдущий стиль"):
+            if "previous_style" in st.session_state:
+                data["style"] = st.session_state.previous_style
+                st.success("Стиль возвращён!")
+                st.rerun()
+            else:
+                st.warning("Нет сохранённого предыдущего стиля.")
+
+    # --- ПРИНЯТЬ ИЗМЕНЕНИЯ ---
+    st.markdown("### 💾 Принять изменения")
+    if st.button("Принять изменения", type="primary"):
+        with st.spinner("Собираю презентацию..."):
             try:
-                # Перезаписываем JSON с новыми данными
                 with open("presentation_data.json", "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
                 
                 style = data.get("style", {"background_color": "#ffffff", "text_color": "#000000", "font_name": "arial.ttf"})
-                result = builder_agent(data, style, filename="final_presentation.pptx")
-                st.success("✅ Презентация собрана!")
+                builder_agent(data, style, filename="final_presentation.pptx")
                 
-                with open("final_presentation.pptx", "rb") as file:
-                    st.download_button(
-                        label="📥 Скачать финальную презентацию",
-                        data=file,
-                        file_name="presentation.pptx",
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                    )
+                st.session_state.pptx_ready = True
+                st.success("✅ Изменения приняты! Теперь можно скачать презентацию.")
             except Exception as e:
                 st.error(f"Ошибка сборки: {e}")
-    
-    # Кнопка сброса (начать заново)
-    if st.button("🔄 Начать заново"):
-        st.session_state.current_data = None
-        st.session_state.original_data = None
-        st.rerun()
+
+    # --- СКАЧАТЬ ПРЕЗЕНТАЦИЮ ---
+    if st.session_state.get("pptx_ready"):
+        with open("final_presentation.pptx", "rb") as file:
+            st.download_button(
+                label="📥 Скачать презентацию",
+                data=file,
+                file_name="presentation.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                key="download_final_btn"
+            )
+
+    # --- НАЧАТЬ ЗАНОВО (С ПРЕДУПРЕЖДЕНИЕМ) ---
+    st.markdown("### 🔄 Начать заново")
+    if "confirm_reset" not in st.session_state:
+        st.session_state.confirm_reset = False
+
+    if not st.session_state.confirm_reset:
+        if st.button("Начать заново"):
+            st.session_state.confirm_reset = True
+            st.rerun()
+    else:
+        st.warning("Вы уверены? Все изменения будут потеряны.")
+        col_reset_1, col_reset_2 = st.columns(2)
+        with col_reset_1:
+            if st.button("Да, начать заново"):
+                st.session_state.current_data = None
+                st.session_state.original_data = None
+                st.session_state.pptx_ready = False
+                st.session_state.confirm_reset = False
+                st.rerun()
+        with col_reset_2:
+            if st.button("Отмена"):
+                st.session_state.confirm_reset = False
+                st.rerun()

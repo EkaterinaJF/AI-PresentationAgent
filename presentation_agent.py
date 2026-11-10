@@ -172,7 +172,11 @@ def _clean_numeric_data(data_list: list) -> list:
     return clean_list
 
 def diagram_agent(data: dict, filename: str, bg_color: str = "#ffffff", text_color: str = "#000000", font_name: str = "arial.ttf"):
-    """Рисует график. Для line/bar возвращает PNG, для pie — возвращает данные для pptx."""
+    # ЗАЩИТА: если пришла строка — превращаем в заглушку
+    if not isinstance(data, dict):
+        print(f"   ⚠️ [DIAGRAM] Данные не словарь, рисую заглушку.")
+        image_agent("График (нет данных)", filename, color=bg_color, font_name=font_name)
+        return filename
     
     chart_type = data.get("chart_type", "bar")
     title = data.get("title", "График")
@@ -182,13 +186,44 @@ def diagram_agent(data: dict, filename: str, bg_color: str = "#ffffff", text_col
     if chart_type == "pie":
         return data
 
+    # --- МАТЕМАТИЧЕСКАЯ ФУНКЦИЯ (плавная кривая) ---
+    if chart_type == "function":
+        formula = data.get("formula", "sin(x)")
+        x_min = data.get("x_min", -10)
+        x_max = data.get("x_max", 10)
+        
+        allowed = {
+            'sin': np.sin, 'cos': np.cos, 'tan': np.tan,
+            'sqrt': np.sqrt, 'log': np.log, 'exp': np.exp,
+            'abs': np.abs, 'pi': np.pi, 'e': np.e
+        }
+        
+        x = np.linspace(x_min, x_max, 1000)
+        allowed['x'] = x
+        
+        try:
+            y = eval(formula, {"__builtins__": {}}, allowed)
+        except Exception as e:
+            print(f"   ⚠️ [DIAGRAM] Ошибка в формуле '{formula}': {e}")
+            y = np.zeros_like(x)
+        
+        # Рисуем график функции и возвращаем файл
+        fig, ax = plt.subplots(figsize=(8, 6), facecolor=bg_color)
+        ax.set_facecolor(bg_color)
+        ax.plot(x, y, color="#4A90E2", linewidth=2)
+        ax.set_title(title, fontsize=14, color=text_color)
+        ax.set_xlabel(data.get("x_label", "X"), fontsize=10, color=text_color)
+        ax.set_ylabel(data.get("y_label", "Y"), fontsize=10, color=text_color)
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(filename, dpi=100, facecolor=bg_color)
+        plt.close(fig)
+        print(f"   ✅ [DIAGRAM] Функция '{formula}' сохранена: {filename}")
+        return filename
+    # ------------------------------------------------
+
     # Для line и bar рисуем через matplotlib
-    plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['text.color'] = text_color
-    plt.rcParams['axes.labelcolor'] = text_color
-    plt.rcParams['xtick.color'] = text_color
-    plt.rcParams['ytick.color'] = text_color
-    plt.rcParams['axes.edgecolor'] = text_color
 
     fig, ax = plt.subplots(figsize=(8, 6), facecolor=bg_color)
     ax.set_facecolor(bg_color)
@@ -208,6 +243,9 @@ def diagram_agent(data: dict, filename: str, bg_color: str = "#ffffff", text_col
     else:
         clean_series = []
         for s in series:
+            # ЗАЩИТА: если элемент series — строка, превращаем в словарь
+            if isinstance(s, str):
+                s = {"name": "Данные", "data": [s]}
             clean_series.append({
                 "name": s.get("name", "Серия"), 
                 "data": _clean_numeric_data(s.get("data", []))
@@ -342,16 +380,45 @@ def text_agent(user_request: str) -> dict:
         - content: Если пользователь указал количество предложений на слайд (например, "по 2-4 предложения"), СТРОГО следуй этому. Если не указал — пиши 6-7 предложений.
         - visual_type: 
           - "generated" — художественная картинка (промпт на английском, до 10 слов).
-          - "stock" — ТОЧНАЯ схема или изображение (анатомия, устройство механизмов, портреты реальных людей, карты, исторические фото, схемы с подписями),запрос пиши на русском.
+          - "stock" — ТОЧНАЯ схема или изображение (анатомия, устройство механизмов, портреты реальных людей, карты, исторические фото, схемы с подписями), запрос пиши на русском.
           - "diagram" — график (объект с chart_type, title, categories, series).
+          ВАЖНО: если пользователь просит «схему» или «принцип работы», это НЕ diagram, а stock.
+          - "table" — таблица с данными (строки и столбцы). Используй, когда нужно показать структурированные данные (сравнение, список, бюджет).
           - "none" — без картинки.
+
+        ОСОБОЕ ПРАВИЛО ДЛЯ "table":
+        Если visual_type = "table", поле visual_data ДОЛЖНО быть объектом (словарём):
+        {{
+            "columns": ["Заголовок 1", "Заголовок 2", ...],
+            "rows": [
+                ["значение 1", "значение 2", ...],
+                ["значение 1", "значение 2", ...]
+            ],
+            "title": "Название таблицы"
+        }}
+        Количество элементов в каждой строке ДОЛЖНО совпадать с количеством столбцов.
+
+        ОСОБОЕ ПРАВИЛО для математических функций:
+        Если пользователь просит нарисовать график функции (синусоида, парабола, гипербола, косинус, логарифм и т.д.):
+        → visual_type: "diagram"
+        → visual_data: {{
+            "chart_type": "function",
+            "title": "Название графика",
+            "formula": "sin(x)",
+            "x_min": -10,
+            "x_max": 10,
+            "x_label": "X",
+            "y_label": "Y"
+        }}
+        Примеры формул: "sin(x)", "cos(x)", "x**2", "1/x", "sqrt(x)", "log(x)", "exp(x)".
 
         ВАЖНОЕ ПРАВИЛО ДЛЯ ДЕТЕЙ:
         - Если аудитория — дети (малыши, школьники), НЕ ИСПОЛЬЗУЙ visual_type: "diagram". 
-
           Вместо графиков используй "generated" (картинки) или "none" (только текст).
         Верни ТОЛЬКО валидный JSON, без пояснений."""),
         ("user", "{input}")
+
+        
     ])
     
     chain = prompt | llm | StrOutputParser()
@@ -375,6 +442,14 @@ def text_agent(user_request: str) -> dict:
 def controller_agent(data: dict, user_request: str = "") -> dict:
     """Контроллер: проверяет данные от текстовика и исправляет ошибки."""
     print("   🛡️ Контроллер проверяет данные...")
+    
+    # --- ПРИНУДИТЕЛЬНОЕ ОТКЛЮЧЕНИЕ ТИТУЛЬНОГО ---
+    if any(phrase in user_request.lower() for phrase in ["без титульного", "титульный не нужен", "без титула", "не нужен титульный"]):
+        if data.get("title_mode") != "none":
+            print("   ⚠️ Контроллер: Пользователь просил без титульного. Исправляю title_mode='none'.")
+            data["title_mode"] = "none"
+            data["first_slide_is_title"] = False
+    # --------------------------------------------
     
     # --- ПРОВЕРКА ЛОГИЧЕСКОГО КОНФЛИКТА ТИТУЛЬНОГО ---
     title_mode = data.get("title_mode")
@@ -402,8 +477,63 @@ def controller_agent(data: dict, user_request: str = "") -> dict:
             slide["visual_data"] = "cute cartoon illustration, bright colors, for kids"
         # ---------------------------------
         
+        # --- ОТЛАДКА: смотрим, что приходит для таблиц ---
+        if visual_type == "table":
+            print(f"   🔍 [DEBUG] Слайд {i+1}. visual_type={visual_type}, visual_data (первые 200 символов)={str(visual_data)[:200]}")
+            
+        # --- ПАРСИНГ HTML-ТАБЛИЦЫ (если текстовик прислал строку с тегами) ---
+        if visual_type == "table" and isinstance(visual_data, str) and "<table>" in visual_data:
+            print(f"   🔄 Контроллер: Парсю HTML-таблицу для слайда {i+1}.")
+            import re
+            rows_html = re.findall(r'<tr>(.*?)</tr>', visual_data, re.DOTALL)
+            parsed_rows = []
+            for row_html in rows_html:
+                cells = re.findall(r'<td[^>]*>(.*?)</td>', row_html, re.DOTALL)
+                if cells:
+                    parsed_rows.append([c.strip() for c in cells])
+            
+            if parsed_rows:
+                columns = parsed_rows[0]
+                rows = parsed_rows[1:]
+                slide["visual_data"] = {
+                    "columns": columns,
+                    "rows": rows,
+                    "title": "Таблица"
+                }
+                print(f"   ✅ Контроллер: HTML-таблица распарсена ({len(rows)} строк, {len(columns)} столбцов).")
+        # ----------------------------------------------------------------------
+        # --- ПРИНУДИТЕЛЬНОЕ ОПРЕДЕЛЕНИЕ МАТЕМАТИЧЕСКОЙ ФУНКЦИИ ---
+        if visual_type == "diagram":
+            title_lower = slide.get("title", "").lower()
+            formula = None
+            
+            if "синусоид" in title_lower or "sin" in title_lower:
+                formula = "sin(x)"
+            elif "косинус" in title_lower or "cos" in title_lower:
+                formula = "cos(x)"
+            elif "парабол" in title_lower or "x**2" in title_lower or "x^2" in title_lower:
+                formula = "x**2"
+            elif "гипербол" in title_lower or "1/x" in title_lower:
+                formula = "1/x"
+            elif "логарифм" in title_lower or "log" in title_lower:
+                formula = "log(x)"
+            elif "экспонент" in title_lower or "exp" in title_lower:
+                formula = "exp(x)"
+            
+            if formula:
+                print(f"   🔄 Контроллер: Слайд {i+1}. Определена функция '{formula}'. Меняю на function.")
+                slide["visual_data"] = {
+                    "chart_type": "function",
+                    "title": slide.get("title", "График"),
+                    "formula": formula,
+                    "x_min": -10,
+                    "x_max": 10,
+                    "x_label": "X",
+                    "y_label": "Y"
+                }
+        # -----------------------------------------------------------
         # Проверяем только промпты для Stable Diffusion
-        if slide["visual_type"] == "generated":
+        if visual_type == "generated":
             words = visual_data.split()
             if len(words) > 15:
                 print(f"   ⚠️ Контроллер: Слайд {i+1}. Промпт слишком длинный ({len(words)} слов). Прошу текстовика исправить...")
@@ -583,6 +713,67 @@ def builder_agent(data: dict, style: dict, filename: str = "presentation.pptx") 
                         image_added = False
                     else:
                         image_added = True
+            elif visual_type == "table":
+                # Защита: если visual_data не словарь — рисуем заглушку
+                if not isinstance(visual_data, dict):
+                    print(f"   ⚠️ [TABLE] Слайд {i+1}. Данные не словарь. Рисую заглушку.")
+                    image_agent("Таблица (нет данных)", img_filename, seed=42 + i, color=placeholder_color, font_name=font_name)
+                    image_added = True
+                else:
+                    print(f"   📋 [TABLE] Слайд {i+1}: {visual_data.get('title', 'Таблица')}")
+                    
+                    columns = visual_data.get("columns", [])
+                    rows = visual_data.get("rows", [])
+                    table_title = visual_data.get("title", "Таблица")
+                    
+                    if not columns or not rows:
+                        print(f"   ⚠️ [TABLE] Слайд {i+1}. Нет данных для таблицы. Пропускаю.")
+                        image_added = False
+                    else:
+                        # Создаём нативную таблицу
+                        num_rows = len(rows) + 1  # +1 для заголовка
+                        num_cols = len(columns)
+                        
+                        # Позиция и размеры таблицы (левая половина слайда)
+                        left = Inches(0.5)
+                        top = Inches(1.5)
+                        width = Inches(5.5)
+                        height = Inches(4.5)
+                        
+                        # Добавляем таблицу на слайд
+                        table_shape = slide.shapes.add_table(num_rows, num_cols, left, top, width, height)
+                        table = table_shape.table
+                        
+                        # Заполняем заголовок
+                        for col_idx, col_name in enumerate(columns):
+                            cell = table.cell(0, col_idx)
+                            cell.text = str(col_name)
+                            # Форматирование заголовка
+                            for paragraph in cell.text_frame.paragraphs:
+                                for run in paragraph.runs:
+                                    run.font.bold = True
+                                    run.font.size = Pt(14)
+                                    run.font.color.rgb = RGBColor(*hex_to_rgb(text_color))
+                            # Заливка заголовка
+                            cell.fill.solid()
+                            cell.fill.fore_color.rgb = RGBColor(*hex_to_rgb(bg_color))
+                        
+                        # Заполняем строки
+                        for row_idx, row_data in enumerate(rows, start=1):
+                            for col_idx in range(num_cols):
+                                cell = table.cell(row_idx, col_idx)
+                                cell_value = str(row_data[col_idx]) if col_idx < len(row_data) else ""
+                                cell.text = cell_value
+                                # Форматирование ячейки
+                                for paragraph in cell.text_frame.paragraphs:
+                                    for run in paragraph.runs:
+                                        run.font.size = Pt(12)
+                                        run.font.color.rgb = RGBColor(*hex_to_rgb(text_color))
+                                # Заливка ячейки
+                                cell.fill.solid()
+                                cell.fill.fore_color.rgb = RGBColor(*hex_to_rgb(bg_color))
+                        
+                        image_added = False  # Таблица уже на слайде, картинку не вставляем
         # -----------------------------------------------------------
         
         # 2.3. Вставка картинки (с сохранением пропорций)
@@ -702,18 +893,50 @@ def regenerate_text(slide_data: dict, user_prompt: str = "") -> str:
     return response.content.strip()
 
 def regenerate_image(slide_data: dict, user_prompt: str = "", filename: str = "temp_slide.png") -> str:
-    """Перегенерирует картинку для одного слайда (с учетом типа визуала)."""
+    """Перегенерирует картинку для одного слайда (с учётом типа визуала)."""
     visual_type = slide_data.get("visual_type", "generated")
     old_prompt = slide_data.get("visual_data", "")
     
-    # Если это сток, то просто ищем заново
+    # Если есть пожелание пользователя — просим текстовика перевести и сократить
+    if user_prompt:
+        fix_prompt = f"""Переведи пожелание пользователя на английский и преврати его в короткий промпт для Stable Diffusion (не более 10 слов, только ключевые теги через запятую).
+        Пожелание: "{user_prompt}"
+        Верни ТОЛЬКО промпт, без кавычек и пояснений."""
+        response = llm.invoke(fix_prompt)
+        user_prompt_en = response.content.strip()
+        print(f"   🔄 Промпт переведён: {user_prompt_en}")
+    else:
+        user_prompt_en = ""
+
+    # --- УДАЛЯЕМ СТАРЫЙ ФАЙЛ, ЧТОБЫ ПРИНУДИТЕЛЬНО ПЕРЕЗАПИСАТЬ ---
+    if os.path.exists(filename):
+        os.remove(filename)
+    # -------------------------------------------------------------
+
     if visual_type == "stock":
-        # Пользовательский промпт добавляем к старому запросу
         new_query = f"{old_prompt} {user_prompt}".strip()
         stock_agent(new_query, filename)
     else:
-        # Для SD добавляем стиль (если он есть в данных слайда, но пока просто промпт)
-        new_prompt = f"{old_prompt}, {user_prompt}" if user_prompt else old_prompt
+        new_prompt = f"{old_prompt}, {user_prompt_en}" if user_prompt_en else old_prompt
         image_agent(new_prompt, filename, seed=hash(new_prompt) % 100000)
         
     return filename
+
+# ============================================================
+# 11. ПЕРЕСБОРКА СТИЛЯ
+# ============================================================
+
+def restyle_presentation(data: dict, user_style_prompt: str, filename: str = "restyled_presentation.pptx") -> str:
+    """Пересобирает презентацию с новым стилем, не трогая картинки."""
+    print("🎨 Пересборка стиля...")
+    
+    # Просим стилиста подобрать новый стиль с учетом пожелания
+    style_request = f"Пользователь хочет изменить стиль презентации. Пожелание: {user_style_prompt}. Тема: {data.get('presentation_title', '')}"
+    new_style = stylist_agent(style_request)
+    
+    # Обновляем стиль в данных
+    data["style"] = new_style
+    
+    # Пересобираем .pptx (картинки уже есть на диске, сборщик их не тронет)
+    result = builder_agent(data, new_style, filename=filename)
+    return result
